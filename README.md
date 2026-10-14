@@ -10,17 +10,29 @@ Diseñado con soporte de primer nivel para:
 
 ---
 
-## ⚡ Instalación y Carga
+## ⚡ Instalación Rápida (Multi-Shell Automática)
 
-### Opción 1: En tus Dotfiles (Recomendada)
+El instalador detecta automáticamente tu sistema operativo, diagnostica tu hardware para asignarte el modelo de IA ideal y configura la integración en todas las shells que tengas instaladas (**Zsh, Oh My Zsh, Fish y Bash**):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dannielnavas/nacel/main/install.sh | bash
+```
+
+---
+
+## 🐚 Integración por Shell y Frameworks
+
+Nacel incluye plugins y autocompletados nativos para las shells más populares:
+
+### 1. Zsh (Vanilla / Manual)
 En tu archivo `~/.zshrc`:
 ```zsh
 fpath=("$HOME/nacel" $fpath)
 source "$HOME/nacel/nacel.plugin.zsh"
 ```
 
-### Opción 2: Con Oh-My-Zsh
-Clona o enlaza el repositorio en tu carpeta de plugins personalizados:
+### 2. Oh My Zsh
+Enlaza o clona el repositorio en tu carpeta de plugins personalizados:
 ```bash
 git clone https://github.com/dannielnavas/nacel "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/nacel"
 ```
@@ -29,10 +41,37 @@ Y añade `nacel` a tu lista de plugins en `~/.zshrc`:
 plugins=(... nacel)
 ```
 
-### Opción 3: Con Zinit
-```zsh
-zinit light dannielnavas/nacel
+### 3. Fish Shell 🐟
+Nacel cuenta con soporte nativo completo para **Fish Shell**, incluyendo hooks de eventos (`fish_postexec`), atajo `Ctrl+G` y autocompletados.
+
+- **Con Fisher:**
+  ```fish
+  fisher install dannielnavas/nacel
+  ```
+- **Instalación Manual:**
+  ```fish
+  # Enlazar plugin y autocompletados
+  mkdir -p ~/.config/fish/conf.d ~/.config/fish/completions
+  ln -sf "$HOME/nacel/nacel.fish" ~/.config/fish/conf.d/nacel.fish
+  ln -sf "$HOME/nacel/completions/nacel.fish" ~/.config/fish/completions/nacel.fish
+  ```
+
+### 4. GNU Bash 🐧
+Soporte nativo con hooks vía `PROMPT_COMMAND`, atajo `Ctrl+G` y autocompletado en Bash:
+En tu archivo `~/.bashrc` (o `~/.bash_profile` en macOS):
+```bash
+source "$HOME/nacel/nacel.bash"
 ```
+
+### 5. Gestores Zsh (Zinit, Antigen, Prezto)
+- **Zinit:**
+  ```zsh
+  zinit light dannielnavas/nacel
+  ```
+- **Antigen:**
+  ```zsh
+  antigen bundle dannielnavas/nacel
+  ```
 
 ---
 

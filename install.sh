@@ -113,15 +113,66 @@ if ! python3 "$INSTALL_DIR/nacel.py" setup-model "$@"; then
   echo -e "${GREEN}✔${RESET} Modelo de respaldo asignado: ${BOLD}$FALLBACK_MODEL${RESET}"
 fi
 
-# 6. Integración con Zsh si existe ~/.zshrc
+# 6. Integración Automática de Shells (Zsh, Oh My Zsh, Fish, Bash)
+echo -e "\n${CYAN}▶${RESET} Configurando integración en tus shells instaladas..."
+
+# 6.1. Integración con Zsh (vanilla ~/.zshrc)
 if [[ -f "$HOME/.zshrc" ]]; then
   if ! grep -q "nacel.plugin.zsh" "$HOME/.zshrc"; then
     echo -e "\n# Nacel AI Plugin" >> "$HOME/.zshrc"
     echo -e "fpath=(\"$INSTALL_DIR\" \$fpath)" >> "$HOME/.zshrc"
     echo -e "source \"$INSTALL_DIR/nacel.plugin.zsh\"" >> "$HOME/.zshrc"
-    echo -e "${GREEN}✔${RESET} Integración añadida a ~/.zshrc"
+    echo -e "${GREEN}✔${RESET} Integración añadida a ${BOLD}~/.zshrc${RESET}"
   else
-    echo -e "${GREEN}✔${RESET} Integración con ~/.zshrc ya configurada."
+    echo -e "${GREEN}✔${RESET} Integración con ${BOLD}~/.zshrc${RESET} ya configurada."
+  fi
+fi
+
+# 6.2. Integración con Oh My Zsh
+OMZ_DIR="${ZSH:-$HOME/.oh-my-zsh}"
+if [[ -d "$OMZ_DIR" ]]; then
+  OMZ_CUSTOM="${ZSH_CUSTOM:-$OMZ_DIR/custom}"
+  OMZ_PLUGIN_DIR="$OMZ_CUSTOM/plugins/nacel"
+  mkdir -p "$OMZ_CUSTOM/plugins"
+  ln -sfn "$INSTALL_DIR" "$OMZ_PLUGIN_DIR"
+  echo -e "${GREEN}✔${RESET} Oh My Zsh detectado: plugin enlazado en ${BOLD}$OMZ_PLUGIN_DIR${RESET}"
+  if [[ -f "$HOME/.zshrc" ]] && ! grep -q "nacel" "$HOME/.zshrc"; then
+    echo -e "  ${YELLOW}💡 Consejo Oh My Zsh:${RESET} Añade ${BOLD}nacel${RESET} a tu lista de plugins en ~/.zshrc:"
+    echo -e "     plugins=(... ${CYAN}nacel${RESET})"
+  fi
+fi
+
+# 6.3. Integración con Fish Shell
+if command -v fish &>/dev/null || [[ -d "$HOME/.config/fish" ]]; then
+  FISH_CONF_DIR="$HOME/.config/fish/conf.d"
+  FISH_COMP_DIR="$HOME/.config/fish/completions"
+  mkdir -p "$FISH_CONF_DIR"
+  mkdir -p "$FISH_COMP_DIR"
+
+  ln -sf "$INSTALL_DIR/nacel.fish" "$FISH_CONF_DIR/nacel.fish"
+  ln -sf "$INSTALL_DIR/completions/nacel.fish" "$FISH_COMP_DIR/nacel.fish"
+  echo -e "${GREEN}✔${RESET} Fish Shell detectado: integración añadida en ${BOLD}$FISH_CONF_DIR/nacel.fish${RESET}"
+  echo -e "  Autocompletados enlazados en: ${BOLD}$FISH_COMP_DIR/nacel.fish${RESET}"
+fi
+
+# 6.4. Integración con Bash (~/.bashrc o ~/.bash_profile)
+BASH_CFG=""
+if [[ -f "$HOME/.bashrc" ]]; then
+  BASH_CFG="$HOME/.bashrc"
+elif [[ -f "$HOME/.bash_profile" ]]; then
+  BASH_CFG="$HOME/.bash_profile"
+elif command -v bash &>/dev/null; then
+  BASH_CFG="$HOME/.bashrc"
+  touch "$BASH_CFG"
+fi
+
+if [[ -n "$BASH_CFG" ]]; then
+  if ! grep -q "nacel.bash" "$BASH_CFG" 2>/dev/null; then
+    echo -e "\n# Nacel AI Plugin" >> "$BASH_CFG"
+    echo -e "source \"$INSTALL_DIR/nacel.bash\"" >> "$BASH_CFG"
+    echo -e "${GREEN}✔${RESET} Bash detectado: integración añadida a ${BOLD}$BASH_CFG${RESET}"
+  else
+    echo -e "${GREEN}✔${RESET} Integración con ${BOLD}$BASH_CFG${RESET} ya configurada."
   fi
 fi
 
@@ -137,7 +188,8 @@ fi
 echo -e "\n${GREEN}════════════════════════════════════════════════════════════${RESET}"
 echo -e "${BOLD}${MAGENTA}✨ Nacel instalado con éxito.${RESET}"
 echo -e "Modelo activo configurado: ${CYAN}${BOLD}${ACTIVE_MODEL}${RESET}"
-echo -e "Comandos disponibles:"
+echo -e "Soporte de shells activo:  ${GREEN}Zsh, Oh My Zsh, Fish y Bash${RESET}"
+echo -e "\nComandos disponibles en cualquier terminal:"
 echo -e "  • ${CYAN}nacel${RESET}               -> Chat interactivo o reparar último fallo"
 echo -e "  • ${CYAN}ask \"<consulta>\"${RESET}    -> Sugiere comandos de terminal"
 echo -e "  • ${CYAN}fix${RESET} (o ${BOLD}Ctrl+G${RESET})    -> Diagnostica y corrige el último comando fallido"
@@ -146,4 +198,7 @@ echo -e "  • ${CYAN}nacel hardware${RESET}      -> Ver diagnóstico de hardwar
 echo -e "  • ${CYAN}nacel model auto${RESET}    -> Auto-ajustar modelo según tu hardware"
 echo -e "  • ${CYAN}nacel model set <m>${RESET} -> Cambia de modelo en cualquier momento"
 echo -e "${GREEN}════════════════════════════════════════════════════════════${RESET}\n"
-echo -e "Reinicia tu terminal o ejecuta: ${BOLD}source ~/.zshrc${RESET}"
+echo -e "Reinicia tu terminal o ejecuta:"
+echo -e "  • Zsh:  ${BOLD}source ~/.zshrc${RESET}"
+echo -e "  • Bash: ${BOLD}source ~/.bashrc${RESET}"
+echo -e "  • Fish: ${BOLD}source ~/.config/fish/conf.d/nacel.fish${RESET}"
