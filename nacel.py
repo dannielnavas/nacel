@@ -162,14 +162,17 @@ def save_config(cfg: dict):
         print_tty(f"{YELLOW}⚠️ No se pudo guardar configuración: {e}{RESET}")
 
 def get_current_model() -> str:
-    """Prioridad: NACEL_MODEL > DILIX_MODEL > config.json['model'] > gemma2:2b."""
-    env_model = os.environ.get("NACEL_MODEL", os.environ.get("DILIX_MODEL", "")).strip()
+    """Prioridad: NACEL_MODEL > config.json['model'] > DILIX_MODEL > gemma2:2b."""
+    env_model = os.environ.get("NACEL_MODEL", "").strip()
     if env_model:
         return env_model
     cfg = load_config()
     cfg_model = cfg.get("model", "").strip()
     if cfg_model:
         return cfg_model
+    legacy_model = os.environ.get("DILIX_MODEL", "").strip()
+    if legacy_model:
+        return legacy_model
     return "gemma2:2b"
 
 def get_ollama_host() -> str:
