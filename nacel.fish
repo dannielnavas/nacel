@@ -113,6 +113,17 @@ function fix -d "Nacel: Diagnostica y corrige el comando fallido previo"
         return 0
     end
 
+    # Únicamente actuar cuando sea un error
+    if test "$exit_code" -eq 0 -a -z "$user_extra"
+        set -l lang (__nacel_get_lang)
+        if test "$lang" = "en"
+            echo -e "\033[1;32m✔ The previous command ('$target_cmd') completed successfully with exit code 0. No error detected to fix.\033[0m"
+        else
+            echo -e "\033[1;32m✔ El comando previo ('$target_cmd') terminó con éxito (código 0). No hay ningún error para corregir.\033[0m"
+        end
+        return 0
+    end
+
     set -g __NACEL_CMD_ACTIVE ""
 
     set -l output (python3 "$__NACEL_SCRIPT" fix "$target_cmd" "$exit_code" "$user_extra")
@@ -191,8 +202,8 @@ function __nacel_postexec --on-event fish_postexec
     # No registrar comandos propios de Nacel
     string match -rq '^(nacel|fix|ask|dilix|__nacel)' -- $cmd; and return
 
-    set -g __NACEL_LAST_CMD "$cmd"
-    set -g __NACEL_LAST_CODE $last_status
+    set -gx __NACEL_LAST_CMD "$cmd"
+    set -gx __NACEL_LAST_CODE $last_status
 
     if test $last_status -ne 0 -a $last_status -ne 130 -a $last_status -ne 148
         set -l mode $NACEL_AUTO_MODE

@@ -122,6 +122,17 @@ fix() {
     return 0
   fi
 
+  # Únicamente actuar cuando sea un error
+  if [[ "${exit_code:-0}" -eq 0 && -z "$user_extra" ]]; then
+    local lang=$(__nacel_get_lang)
+    if [[ "$lang" == "en" ]]; then
+      echo -e "\033[1;32m✔ The previous command ('$target_cmd') completed successfully with exit code 0. No error detected to fix.\033[0m"
+    else
+      echo -e "\033[1;32m✔ El comando previo ('$target_cmd') terminó con éxito (código 0). No hay ningún error para corregir.\033[0m"
+    fi
+    return 0
+  fi
+
   # Reset del flag para evitar bucles
   __NACEL_CMD_ACTIVE=""
 

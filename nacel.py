@@ -40,6 +40,10 @@ DIM = "\033[2m"
 ITALIC = "\033[3m"
 RESET = "\033[0m"
 
+# Detección y limpieza de buffers de terminal
+ANSI_ESCAPE_REGEX = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\x1b\([B0]')
+PROMPT_CHARS = {'❯', '$', '#', '%', '➜', '>', '⚡', '»'}
+
 # ==============================================================================
 # INTERNACIONALIZACIÓN (I18N) - ESPAÑOL & INGLÉS
 # ==============================================================================
@@ -83,6 +87,7 @@ TEXTS = {
         "explanation_label": "Explicación:",
         "suggested_label": "Comando sugerido:",
         "ollama_offline": "Ollama no responde en {host}. Inícialo con 'ollama serve' o abre la aplicación.",
+        "command_success_no_error": "✔ El comando previo ('{cmd}') terminó con éxito (código 0). No hay ningún error para corregir.",
         "no_error_found": "💡 No hay ningún comando previo registrado para analizar.",
         "no_code_found": "💡 No se detectó código ni contenido para analizar.",
         "no_debug_target": "💡 No se proporcionó ningún mensaje o traza de error para depurar.",
@@ -132,6 +137,7 @@ TEXTS = {
         "explanation_label": "Explanation:",
         "suggested_label": "Suggested command:",
         "ollama_offline": "Ollama is not responding at {host}. Start it with 'ollama serve' or open the app.",
+        "command_success_no_error": "✔ The previous command ('{cmd}') completed successfully with exit code 0. No error detected to fix.",
         "no_error_found": "💡 No recent command registered to analyze.",
         "no_code_found": "💡 No code or content detected to analyze.",
         "no_debug_target": "💡 No error message or trace provided to debug.",
@@ -317,19 +323,22 @@ def clean_command(cmd: str) -> str:
         cmd = cmd[1:-1].strip()
     return cmd
 
+def is_wsl() -> bool:
+    try:
+        uname_rel = platform.uname().release.lower()
+        return "microsoft" in uname_rel or "wsl" in uname_rel or os.path.exists("/mnt/c/Windows")
+    except Exception:
+        return False
+
 def copy_to_clipboard(text: str) -> bool:
     system = platform.system().lower()
-    is_wsl = (
-        "microsoft" in platform.uname().release.lower()
-        or "wsl" in platform.uname().release.lower()
-        or os.path.exists("/mnt/c/Windows")
-    )
+    wsl_env = is_wsl()
     try:
         if system == "darwin":
             p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
             p.communicate(text.encode("utf-8"))
             return p.returncode == 0
-        elif is_wsl and subprocess.run(["which", "clip.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        elif wsl_env and subprocess.run(["which", "clip.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
             p = subprocess.Popen(["clip.exe"], stdin=subprocess.PIPE)
             p.communicate(text.encode("utf-8"))
             return p.returncode == 0
@@ -346,7 +355,7 @@ def copy_to_clipboard(text: str) -> bool:
                 p = subprocess.Popen(["xsel", "--clipboard", "--input"], stdin=subprocess.PIPE)
                 p.communicate(text.encode("utf-8"))
                 return p.returncode == 0
-            elif is_wsl:
+            elif wsl_env:
                 p = subprocess.Popen(["clip.exe"], stdin=subprocess.PIPE)
                 p.communicate(text.encode("utf-8"))
                 return p.returncode == 0
@@ -356,15 +365,11 @@ def copy_to_clipboard(text: str) -> bool:
 
 def get_os_info() -> str:
     system = platform.system().lower()
-    is_wsl = (
-        "microsoft" in platform.uname().release.lower()
-        or "wsl" in platform.uname().release.lower()
-        or os.path.exists("/mnt/c/Windows")
-    )
+    wsl_env = is_wsl()
 
     if system == "darwin":
         return f"macOS ({platform.mac_ver()[0]})"
-    elif system == "linux" or is_wsl:
+    elif system == "linux" or wsl_env:
         distro_str = "Linux"
         if os.path.exists("/etc/os-release"):
             try:
@@ -589,63 +594,270 @@ def get_model_recommendation(hw=None) -> dict:
         "catalog": catalog
     }
 
-def get_terminal_scrollback(lines=30) -> str:
+def is_prompt_header(s: str) -> bool:
+    s = s.strip()
+    if not s:
+        return False
+    # Encabezados de prompts multilínea (ruta, user@host, rama git, tiempo)
+    if (s.startswith("~") or s.startswith("/") or "@" in s) and (" on " in s or " in " in s or "(" in s or "[" in s):
+        return True
+    if re.match(r"^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+[: ].*", s):
+        return True
+    if re.match(r"^(~|/)[a-zA-Z0-9_/.-]*(\s+on\s+|\s+in\s+|\s+\().*", s):
+        return True
+    return False
+
+def clean_trailing_prompt(filtered: list) -> list:
+    while filtered:
+        s = filtered[-1].strip()
+        if not s:
+            filtered.pop()
+            continue
+        if s in PROMPT_CHARS:
+            filtered.pop()
+            continue
+        if any(s.endswith(p) for p in PROMPT_CHARS) and (s.startswith("~") or s.startswith("/") or "@" in s or is_prompt_header(s)):
+            filtered.pop()
+            continue
+        if is_prompt_header(s):
+            filtered.pop()
+            continue
+        break
+    return filtered
+
+def extract_command_output(raw_scrollback: str, last_cmd: str, last_code: str = "1") -> str:
     """
-    Captura de scrollback inteligente multiplataforma:
+    Aísla con precisión quirúrgica únicamente la salida/traza de error producida por last_cmd:
+    1. Limpia secuencias de escape ANSI.
+    2. Localiza la invocación de last_cmd buscando de abajo hacia arriba.
+    3. Toma las líneas inmediatamente posteriores al comando.
+    4. Trunca en el siguiente prompt o banner interactivo de Nacel.
+    5. Limpia líneas residuales de prompt.
+    """
+    if not raw_scrollback or not raw_scrollback.strip():
+        return ""
+
+    cleaned = ANSI_ESCAPE_REGEX.sub("", raw_scrollback)
+    lines = [l.rstrip() for l in cleaned.splitlines()]
+
+    # Eliminar líneas vacías al final
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    if not lines:
+        return ""
+
+    cmd_clean = last_cmd.strip()
+    cmd_tokens = cmd_clean.split()
+    first_token = cmd_tokens[0] if cmd_tokens else ""
+
+    cmd_idx = -1
+    # Buscar de abajo hacia arriba la línea donde se ejecutó last_cmd
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i].strip()
+        # Ignorar líneas que sean llamadas a fix o nacel
+        if line.startswith("fix") or line.startswith("nacel fix") or line == "nacel":
+            continue
+        if any(line.startswith(f"{p} fix") or line.startswith(f"{p} nacel") for p in PROMPT_CHARS):
+            continue
+        if "¿Analizar con Nacel?" in line or "Analyze with Nacel?" in line:
+            continue
+        if line.startswith("╭─ ❌") or line.startswith("╰─"):
+            continue
+
+        if cmd_clean and cmd_clean in line:
+            cmd_idx = i
+            break
+
+    # Si no se encontró la línea con el comando completo, buscar por primer token ejecutable
+    if cmd_idx == -1 and first_token:
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i].strip()
+            if line.startswith("fix") or line.startswith("nacel"):
+                continue
+            if any(line.startswith(f"{p} fix") or line.startswith(f"{p} nacel") for p in PROMPT_CHARS):
+                continue
+            if "¿Analizar con Nacel?" in line or "Analyze with Nacel?" in line:
+                continue
+            if line.startswith("╭─ ❌") or line.startswith("╰─"):
+                continue
+            if first_token in line:
+                cmd_idx = i
+                break
+
+    if cmd_idx != -1:
+        target_lines = lines[cmd_idx + 1:]
+    else:
+        target_lines = lines[-40:]
+
+    filtered = []
+    for l in target_lines:
+        s = l.strip()
+        # Cortar en banners interactivos posteriores
+        if "¿Analizar con Nacel?" in s or "Analyze with Nacel?" in s:
+            break
+        if s.startswith("╭─ ❌") or s.startswith("╰─") or "Type nacel or fix" in s or "Escribe nacel o fix" in s:
+            break
+        # Cortar en prompt o invocaciones posteriores
+        if s in ("fix", "nacel", "nacel fix") or any(s.startswith(f"{p} fix") or s.startswith(f"{p} nacel") for p in PROMPT_CHARS):
+            break
+        if s in PROMPT_CHARS:
+            break
+        if is_prompt_header(s) or (any(s.endswith(p) for p in PROMPT_CHARS) and ("~" in s or "/" in s or "@" in s or " on " in s)):
+            break
+        filtered.append(l)
+
+    filtered = clean_trailing_prompt(filtered)
+
+    # Limitar salida si excede 50 líneas para preservar contexto y atención del modelo
+    if len(filtered) > 50:
+        filtered = ["[... output truncated / salida truncada ...]"] + filtered[-45:]
+
+    return "\n".join(filtered).strip()
+
+def get_last_history_command() -> str:
+    """Recupera el último comando ejecutado desde el entorno o los archivos de historial."""
+    for var in ("__NACEL_LAST_CMD", "DILIX_LAST_CMD"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            return val
+
+    home = os.path.expanduser("~")
+    hist_files = [
+        os.path.join(home, ".zsh_history"),
+        os.path.join(home, ".bash_history"),
+        os.path.join(home, ".local/share/fish/fish_history"),
+    ]
+    for hf in hist_files:
+        if os.path.isfile(hf):
+            try:
+                with open(hf, "r", errors="ignore") as f:
+                    lines = f.readlines()
+                for line in reversed(lines):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith(":") and ";" in line:
+                        cmd = line.split(";", 1)[1].strip()
+                    elif line.startswith("- cmd:"):
+                        cmd = line.replace("- cmd:", "", 1).strip()
+                    else:
+                        cmd = line.strip()
+
+                    if cmd and not any(cmd.startswith(x) for x in ("nacel", "dilix", "fix", "ask", "history", "exit", "clear")):
+                        return cmd
+            except Exception:
+                pass
+    return ""
+
+def get_terminal_scrollback(lines=120) -> str:
+    """
+    Captura de scrollback inteligente multiplataforma sin truncamiento arbitrario:
     1. WezTerm nativo (macOS/Linux)
     2. WezTerm en WSL2 (wezterm.exe)
     3. Tmux capture-pane
     4. Kitty get-text
+    5. Zellij dump-screen
+    6. macOS Apple Terminal (osascript)
+    7. macOS iTerm2 (osascript)
     """
-    # 1. WezTerm nativo
-    try:
-        res = subprocess.run(
-            ["wezterm", "cli", "get-text", "--start-line", f"-{lines}"],
-            capture_output=True, text=True, timeout=1
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            raw_lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
-            return "\n".join(raw_lines[-20:])
-    except Exception:
-        pass
+    term_prog = os.environ.get("TERM_PROGRAM", "")
 
-    # 2. WezTerm en WSL2 (interoperabilidad con Windows)
-    try:
-        res = subprocess.run(
-            ["wezterm.exe", "cli", "get-text", "--start-line", f"-{lines}"],
-            capture_output=True, text=True, timeout=1
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            raw_lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
-            return "\n".join(raw_lines[-20:])
-    except Exception:
-        pass
+    # 1. WezTerm nativo
+    if term_prog == "WezTerm" or os.environ.get("WEZTERM_PANE"):
+        try:
+            res = subprocess.run(
+                ["wezterm", "cli", "get-text", "--start-line", f"-{lines}"],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout
+        except Exception:
+            pass
+
+    # 2. WezTerm en WSL2
+    if is_wsl():
+        try:
+            res = subprocess.run(
+                ["wezterm.exe", "cli", "get-text", "--start-line", f"-{lines}"],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout
+        except Exception:
+            pass
 
     # 3. Tmux
     if os.environ.get("TMUX"):
         try:
             res = subprocess.run(
                 ["tmux", "capture-pane", "-p", "-S", f"-{lines}"],
-                capture_output=True, text=True, timeout=1
+                capture_output=True, text=True, timeout=1.5
             )
             if res.returncode == 0 and res.stdout.strip():
-                raw_lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
-                return "\n".join(raw_lines[-20:])
+                return res.stdout
         except Exception:
             pass
 
     # 4. Kitty
-    if os.environ.get("KITTY_PID"):
+    if os.environ.get("KITTY_PID") or term_prog == "kitty":
         try:
             res = subprocess.run(
                 ["kitty", "@", "get-text", "--extent", "screen"],
-                capture_output=True, text=True, timeout=1
+                capture_output=True, text=True, timeout=1.5
             )
             if res.returncode == 0 and res.stdout.strip():
-                raw_lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
-                return "\n".join(raw_lines[-20:])
+                return res.stdout
         except Exception:
             pass
+
+    # 5. Zellij
+    if os.environ.get("ZELLIJ"):
+        try:
+            res = subprocess.run(
+                ["zellij", "action", "dump-screen"],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout
+        except Exception:
+            pass
+
+    # 6. macOS Apple Terminal
+    if platform.system() == "Darwin" and term_prog == "Apple_Terminal":
+        try:
+            res = subprocess.run(
+                ["osascript", "-e", 'tell application "Terminal" to get history of selected tab of front window'],
+                capture_output=True, text=True, timeout=1.5
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout
+        except Exception:
+            pass
+
+    # 7. macOS iTerm2
+    if platform.system() == "Darwin" and term_prog == "iTerm.app":
+        for app_name in ("iTerm2", "iTerm"):
+            try:
+                res = subprocess.run(
+                    ["osascript", "-e", f'tell application "{app_name}" to tell current session of current window to get text'],
+                    capture_output=True, text=True, timeout=1.5
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    return res.stdout
+            except Exception:
+                pass
+
+    # Fallback general para WezTerm
+    try:
+        res = subprocess.run(
+            ["wezterm", "cli", "get-text", "--start-line", f"-{lines}"],
+            capture_output=True, text=True, timeout=1.0
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout
+    except Exception:
+        pass
 
     return ""
 
@@ -1112,8 +1324,12 @@ def handle_debug(args: list):
         error_content = " ".join(args).strip()
         source = t("snippet_label")
     else:
-        error_content = get_terminal_scrollback(30)
-        source = "Terminal scrollback"
+        last_cmd = os.environ.get("__NACEL_LAST_CMD", "").strip() or os.environ.get("DILIX_LAST_CMD", "").strip() or get_last_history_command()
+        last_code = os.environ.get("__NACEL_LAST_CODE", "").strip() or "1"
+        raw_scrollback = get_terminal_scrollback(120)
+        extracted = extract_command_output(raw_scrollback, last_cmd, last_code) if raw_scrollback else ""
+        error_content = extracted if extracted else (raw_scrollback[-3000:].strip() if raw_scrollback else "")
+        source = f"Terminal trace ({last_cmd})" if last_cmd else "Terminal scrollback"
 
     if not error_content:
         print_tty(f"{YELLOW}{t('no_debug_target')}{RESET}")
@@ -1156,12 +1372,52 @@ Sé analítico, preciso y no uses rodeos."""
 def handle_fix(last_cmd: str, last_code: str, error_msg: str = ""):
     lang = ensure_language()
     model = get_current_model()
-    if not last_cmd.strip():
+
+    # 1. Recuperar comando previo si viene vacío
+    last_cmd = last_cmd.strip()
+    if not last_cmd:
+        last_cmd = os.environ.get("__NACEL_LAST_CMD", "").strip() or os.environ.get("DILIX_LAST_CMD", "").strip() or get_last_history_command()
+
+    if not last_cmd:
         print_tty(f"{YELLOW}{t('no_error_found')}{RESET}")
         sys.stdout.write("CANCEL:\n")
         return
 
-    scrollback = error_msg.strip() if error_msg.strip() else get_terminal_scrollback(25)
+    # 2. Recuperar código de salida previo
+    last_code = str(last_code).strip()
+    if not last_code:
+        last_code = os.environ.get("__NACEL_LAST_CODE", "").strip() or "1"
+
+    # 3. ÚNICAMENTE cuando es un error: si exit code es 0 y no hay error explícito ni stdin
+    has_explicit_err = bool(error_msg.strip())
+    has_piped_input = not sys.stdin.isatty()
+
+    if last_code == "0" and not has_explicit_err and not has_piped_input:
+        print_tty(f"{GREEN}{t('command_success_no_error', cmd=last_cmd)}{RESET}")
+        sys.stdout.write("CANCEL:\n")
+        return
+
+    # 4. Obtención precisa del comando y su salida de error
+    command_output = ""
+    if has_piped_input:
+        try:
+            command_output = sys.stdin.read().strip()
+        except Exception:
+            pass
+
+    if not command_output and has_explicit_err:
+        command_output = error_msg.strip()
+
+    if not command_output:
+        raw_scrollback = get_terminal_scrollback(lines=120)
+        command_output = extract_command_output(raw_scrollback, last_cmd, last_code)
+
+    if not command_output:
+        if lang == "en":
+            command_output = f"(No standard output or error trace was emitted to the terminal; the command exited with code {last_code}.)"
+        else:
+            command_output = f"(El comando terminó con código de error {last_code} sin emitir trazas de error ni salida estándar en la terminal.)"
+
     print_tty(f"{DIM}✨ Nacel {t('processing_fix', model=model)}{RESET}")
 
     if lang == "en":
@@ -1170,16 +1426,23 @@ Environment Context:
 Operating System: {get_os_info()}
 Current directory: {os.getcwd()}
 
-The following terminal command just failed:
-Command executed: {last_cmd}
-Exit code: {last_code}
-Terminal output / error trace context:
-{scrollback}
+The following terminal command failed with an error:
+==================================================
+COMMAND EXECUTED:
+{last_cmd}
 
-Analyze the logical cause of failure and formulate the exact correction.
+EXIT CODE:
+{last_code}
+
+ERROR OUTPUT / TERMINAL TRACE:
+{command_output}
+==================================================
+
+Analyze the exact root cause directly from the command and error output above.
+Formulate the exact corrected command to resolve the issue.
 Respond ONLY in this valid JSON format:
 {{
-  "causa": "Direct 1-sentence logical explanation of why it failed in English.",
+  "causa": "Direct 1-sentence logical explanation of why it failed in English based on the error trace.",
   "que_hacer": "Clear, concise instruction of what to do in English.",
   "comando": "Exact corrected executable terminal command, no markdown, no quotes"
 }}"""
@@ -1189,16 +1452,23 @@ Contexto del entorno:
 Sistema Operativo: {get_os_info()}
 Directorio actual: {os.getcwd()}
 
-El siguiente comando de terminal acaba de fallar:
-Comando ejecutado: {last_cmd}
-Código de salida (exit code): {last_code}
-Contexto / Salida de error de terminal:
-{scrollback}
+El siguiente comando de terminal falló con error:
+==================================================
+COMANDO EJECUTADO:
+{last_cmd}
 
-Analiza la causa lógica del fallo y formula la corrección exacta.
+CÓDIGO DE SALIDA (EXIT CODE):
+{last_code}
+
+SALIDA / TRAZA DE ERROR DEL COMANDO:
+{command_output}
+==================================================
+
+Analiza la causa raíz exacta basándote directamente en el comando ejecutado y su salida de error.
+Formula el comando exacto y corregido para resolver la anomalía.
 Responde ÚNICAMENTE en este formato JSON válido:
 {{
-  "causa": "Explicación directa de 1 frase del por qué falló de manera lógica en español.",
+  "causa": "Explicación directa de 1 frase del por qué falló de manera lógica en español basándote en la traza de error.",
   "que_hacer": "Instrucción clara y concisa de qué toca hacer en español.",
   "comando": "Comando exacto de terminal corregido para solucionar o reintentar, sin markdown ni explicaciones adicionales"
 }}"""
@@ -1573,7 +1843,7 @@ def main():
         handle_ask(query)
     elif command == "fix":
         cmd = args[0] if len(args) > 0 else ""
-        code = args[1] if len(args) > 1 else "1"
+        code = args[1] if len(args) > 1 else ""
         err = " ".join(args[2:]) if len(args) > 2 else ""
         handle_fix(cmd, code, err)
     elif command == "query":
