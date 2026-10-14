@@ -9,7 +9,7 @@ set -e
 NACEL_DIR="${NACEL_DIR:-$HOME/.nacel}"
 NACEL_BIN_DIR="$HOME/.local/bin"
 NACEL_CONFIG_DIR="$HOME/.config/nacel"
-DEFAULT_MODEL="gemma2:2b"
+CONFIG_FILE="$NACEL_CONFIG_DIR/config.json"
 
 # Colores ANSI
 BOLD="\033[1m"
@@ -18,6 +18,7 @@ MAGENTA="\033[35m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
 RED="\033[31m"
+DIM="\033[2m"
 RESET="\033[0m"
 
 echo -e "${CYAN}╭───────────────────────────────────────────────────────────╮${RESET}"
@@ -80,11 +81,36 @@ if [[ ":$PATH:" != *":$NACEL_BIN_DIR:"* ]]; then
   echo -e "  Añade 'export PATH=\"\$HOME/.local/bin:\$PATH\"' a tu ~/.zshrc o ~/.bashrc."
 fi
 
-# 5. Configuración inicial
-CONFIG_FILE="$NACEL_CONFIG_DIR/config.json"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo -e "{\n  \"lang\": \"es\",\n  \"model\": \"$DEFAULT_MODEL\"\n}" > "$CONFIG_FILE"
-  echo -e "${GREEN}✔${RESET} Archivo de configuración creado en: ${BOLD}$CONFIG_FILE${RESET}"
+# 5. Detección Inteligente de Hardware y Configuración del Mejor Modelo
+echo -e "\n${CYAN}▶${RESET} Analizando especificaciones de tu equipo para asignar el modelo óptimo..."
+
+# Ejecutar el asistente de modelo inteligente de Nacel
+if ! python3 "$INSTALL_DIR/nacel.py" setup-model "$@"; then
+  echo -e "${YELLOW}⚠️ Advertencia: El asistente de modelo tuvo un aviso. Aplicando configuración de respaldo...${RESET}"
+  
+  # Fallback en Bash puro si python3 fallase
+  FALLBACK_MODEL="qwen2.5-coder:7b"
+  if [[ "$OS_TYPE" == "macos" ]]; then
+    MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+    RAM_GB=$(( MEM_BYTES / 1024 / 1024 / 1024 ))
+    ARCH=$(uname -m)
+    if [[ "$ARCH" != "arm64" && $RAM_GB -lt 8 ]]; then
+      FALLBACK_MODEL="qwen2.5-coder:3b"
+    fi
+  else
+    MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    RAM_GB=$(( MEM_KB / 1024 / 1024 ))
+    if [[ $RAM_GB -lt 6 ]]; then
+      FALLBACK_MODEL="qwen2.5-coder:1.5b"
+    elif [[ $RAM_GB -lt 12 ]] && ! command -v nvidia-smi &>/dev/null; then
+      FALLBACK_MODEL="qwen2.5-coder:3b"
+    fi
+  fi
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo -e "{\n  \"lang\": \"es\",\n  \"model\": \"$FALLBACK_MODEL\"\n}" > "$CONFIG_FILE"
+  fi
+  echo -e "${GREEN}✔${RESET} Modelo de respaldo asignado: ${BOLD}$FALLBACK_MODEL${RESET}"
 fi
 
 # 6. Integración con Zsh si existe ~/.zshrc
@@ -99,31 +125,25 @@ if [[ -f "$HOME/.zshrc" ]]; then
   fi
 fi
 
-# 7. Verificación de Ollama
-if command -v ollama &>/dev/null; then
-  echo -e "${GREEN}✔${RESET} Ollama detectado en el sistema."
-  if ollama list 2>/dev/null | grep -q "$DEFAULT_MODEL"; then
-    echo -e "${GREEN}✔${RESET} Modelo ${BOLD}$DEFAULT_MODEL${RESET} ya está disponible localmente."
-  else
-    echo -e "${CYAN}▶${RESET} Descargando modelo recomendado (${DEFAULT_MODEL})..."
-    ollama pull "$DEFAULT_MODEL" || {
-      echo -e "${YELLOW}⚠️ No se pudo descargar el modelo automáticamente.${RESET}"
-      echo -e "Ejecuta: 'ollama pull $DEFAULT_MODEL' cuando tengas conexión."
-    }
+# 7. Resumen de configuración
+ACTIVE_MODEL="qwen2.5-coder:7b"
+if [[ -f "$CONFIG_FILE" ]]; then
+  DETECTED_CFG_MODEL=$(grep -o '"model": *"[^"]*"' "$CONFIG_FILE" 2>/dev/null | cut -d'"' -f4)
+  if [[ -n "$DETECTED_CFG_MODEL" ]]; then
+    ACTIVE_MODEL="$DETECTED_CFG_MODEL"
   fi
-else
-  echo -e "${YELLOW}⚠️ Ollama no está instalado.${RESET}"
-  echo -e "Para usar Nacel con modelos locales, descarga e instala Ollama desde: ${CYAN}https://ollama.com${RESET}"
-  echo -e "Luego descarga el modelo recomendado con: ${BOLD}ollama pull $DEFAULT_MODEL${RESET}"
 fi
 
 echo -e "\n${GREEN}════════════════════════════════════════════════════════════${RESET}"
 echo -e "${BOLD}${MAGENTA}✨ Nacel instalado con éxito.${RESET}"
+echo -e "Modelo activo configurado: ${CYAN}${BOLD}${ACTIVE_MODEL}${RESET}"
 echo -e "Comandos disponibles:"
 echo -e "  • ${CYAN}nacel${RESET}               -> Chat interactivo o reparar último fallo"
 echo -e "  • ${CYAN}ask \"<consulta>\"${RESET}    -> Sugiere comandos de terminal"
 echo -e "  • ${CYAN}fix${RESET} (o ${BOLD}Ctrl+G${RESET})    -> Diagnostica y corrige el último comando fallido"
-echo -e "  • ${CYAN}nacel menu${RESET}          -> Menú interactivo"
-echo -e "  • ${CYAN}nacel model set <m>${RESET} -> Cambia de modelo (ej: gemma2:2b)"
+echo -e "  • ${CYAN}nacel menu${RESET}          -> Menú interactivo con todas las opciones"
+echo -e "  • ${CYAN}nacel hardware${RESET}      -> Ver diagnóstico de hardware de tu equipo"
+echo -e "  • ${CYAN}nacel model auto${RESET}    -> Auto-ajustar modelo según tu hardware"
+echo -e "  • ${CYAN}nacel model set <m>${RESET} -> Cambia de modelo en cualquier momento"
 echo -e "${GREEN}════════════════════════════════════════════════════════════${RESET}\n"
 echo -e "Reinicia tu terminal o ejecuta: ${BOLD}source ~/.zshrc${RESET}"

@@ -21,7 +21,10 @@ if [[ ! -f "$NACEL_PLUGIN_DIR/nacel.py" ]]; then
 fi
 
 export __NACEL_SCRIPT="${NACEL_PLUGIN_DIR}/nacel.py"
-export NACEL_MODEL="${NACEL_MODEL:-${DILIX_MODEL:-gemma2:2b}}"
+# Si el usuario definió DILIX_MODEL previamente y no NACEL_MODEL, sincronizarlo
+if [[ -n "$DILIX_MODEL" && -z "$NACEL_MODEL" ]]; then
+  export NACEL_MODEL="$DILIX_MODEL"
+fi
 
 # Modos de comportamiento cuando un comando da error:
 #   "ask"  -> Pregunta si deseas que Nacel analice el error [s/N] / [y/N]
@@ -155,6 +158,10 @@ nacel() {
     model|models|status|info)
       shift
       python3 "$nacel_py" model "$@"
+      ;;
+    hardware|hw|specs)
+      shift
+      python3 "$nacel_py" hardware "$@"
       ;;
     explain|code)
       shift

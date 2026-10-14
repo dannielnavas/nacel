@@ -13,6 +13,9 @@ import urllib.request
 import urllib.error
 import subprocess
 import platform
+import shutil
+import time
+import select
 
 try:
     import readline
@@ -162,7 +165,7 @@ def save_config(cfg: dict):
         print_tty(f"{YELLOW}⚠️ No se pudo guardar configuración: {e}{RESET}")
 
 def get_current_model() -> str:
-    """Prioridad: NACEL_MODEL > config.json['model'] > DILIX_MODEL > gemma2:2b."""
+    """Prioridad: NACEL_MODEL > config.json['model'] > DILIX_MODEL > modelo recomendado para el hardware."""
     env_model = os.environ.get("NACEL_MODEL", "").strip()
     if env_model:
         return env_model
@@ -173,7 +176,11 @@ def get_current_model() -> str:
     legacy_model = os.environ.get("DILIX_MODEL", "").strip()
     if legacy_model:
         return legacy_model
-    return "gemma2:2b"
+    try:
+        rec = get_model_recommendation()
+        return rec.get("recommended_model", "qwen2.5-coder:7b")
+    except Exception:
+        return "qwen2.5-coder:7b"
 
 def get_ollama_host() -> str:
     return os.environ.get("NACEL_HOST", os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
@@ -211,7 +218,7 @@ def ensure_language() -> str:
     cfg = load_config()
     cfg["lang"] = selected
     if "model" not in cfg:
-        cfg["model"] = "gemma2:2b"
+        cfg["model"] = get_current_model()
     save_config(cfg)
 
     if selected == "en":
@@ -243,14 +250,9 @@ def print_tty(msg="", end="\n"):
         sys.stderr.write(msg + end)
         sys.stderr.flush()
 
-def read_key():
-    if not sys.stdin.isatty():
-        try:
-            ch = sys.stdin.read(1)
-            return ch if ch else "q"
-        except Exception:
-            return "q"
-
+def read_key(timeout=None) -> str:
+    """Lee una sola pulsación de tecla, con soporte para timeout y /dev/tty."""
+    # 1. Intentar /dev/tty primero (funciona incluso si stdin está redirigido o pipeado via curl)
     try:
         with open("/dev/tty", "r") as tty:
             import tty as tty_module
@@ -259,9 +261,12 @@ def read_key():
             old_settings = termios.tcgetattr(fd)
             try:
                 tty_module.setraw(fd)
+                if timeout is not None and timeout > 0:
+                    r, _, _ = select.select([tty], [], [], timeout)
+                    if not r:
+                        return "\r"
                 ch = tty.read(1)
                 if ch == "\x1b":
-                    import select
                     r, _, _ = select.select([tty], [], [], 0.05)
                     if r:
                         tty.read(2)
@@ -271,11 +276,34 @@ def read_key():
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     except Exception:
+        pass
+
+    # 2. Si /dev/tty falla o no existe, intentar stdin
+    if sys.stdin.isatty():
         try:
             line = input()
             return line.strip()[:1] if line.strip() else "\r"
         except Exception:
-            return "q"
+            return "\r"
+    else:
+        try:
+            ch = sys.stdin.read(1)
+            return ch if ch else "\r"
+        except Exception:
+            return "\r"
+
+def input_tty(prompt="") -> str:
+    """Lee una línea de texto del usuario asegurando acceso a la terminal /dev/tty."""
+    if prompt:
+        print_tty(prompt, end="")
+    try:
+        with open("/dev/tty", "r") as tty:
+            return tty.readline().strip()
+    except Exception:
+        try:
+            return input().strip()
+        except Exception:
+            return ""
 
 def clean_command(cmd: str) -> str:
     cmd = cmd.strip()
@@ -371,6 +399,195 @@ def check_ollama() -> bool:
             return resp.status == 200
     except Exception:
         return False
+
+# ==============================================================================
+# DETECCIÓN DE HARDWARE Y RECOMENDACIÓN INTELIGENTE DE MODELOS
+# ==============================================================================
+def get_system_hardware() -> dict:
+    """Detecta las especificaciones clave del hardware (RAM, CPU, GPU/Aceleración, OS, WSL2)."""
+    hw = {
+        "os": platform.system(),
+        "os_name": get_os_info(),
+        "arch": platform.machine(),
+        "cpu_name": "Procesador genérico",
+        "cpu_cores": os.cpu_count() or 1,
+        "ram_gb": 0.0,
+        "gpu_name": None,
+        "vram_gb": 0.0,
+        "acceleration": "CPU Multithread",
+        "is_wsl": False,
+        "is_apple_silicon": False,
+    }
+
+    system_lower = platform.system().lower()
+    uname_rel = platform.uname().release.lower()
+    if system_lower == "linux":
+        if "microsoft" in uname_rel or "wsl" in uname_rel or os.path.exists("/mnt/c/Windows"):
+            hw["is_wsl"] = True
+
+    # macOS: Detección precisa de Apple Silicon vs Intel Mac
+    if system_lower == "darwin":
+        try:
+            mem = subprocess.check_output(["sysctl", "-n", "hw.memsize"], stderr=subprocess.DEVNULL).decode().strip()
+            hw["ram_gb"] = round(int(mem) / (1024**3), 1)
+        except Exception:
+            pass
+        try:
+            cpu = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], stderr=subprocess.DEVNULL).decode().strip()
+            if cpu:
+                hw["cpu_name"] = cpu
+        except Exception:
+            pass
+        if hw["arch"] in ("arm64", "aarch64") or "Apple" in hw["cpu_name"]:
+            hw["is_apple_silicon"] = True
+            hw["gpu_name"] = f"{hw['cpu_name']} (GPU)"
+            hw["vram_gb"] = hw["ram_gb"]
+            hw["acceleration"] = "Metal (Memoria Unificada Apple Silicon)"
+        else:
+            hw["acceleration"] = "CPU (Intel Mac)"
+    else:
+        # Linux / WSL2
+        try:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        kb = int(line.split()[1])
+                        hw["ram_gb"] = round(kb / (1024**2), 1)
+                        break
+        except Exception:
+            pass
+        try:
+            with open("/proc/cpuinfo", "r") as f:
+                for line in f:
+                    if "model name" in line:
+                        hw["cpu_name"] = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            pass
+
+    # Verificación de GPU dedicada NVIDIA (Linux nativo y WSL2 con CUDA passthrough)
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            if out:
+                first = out.splitlines()[0].split(",")
+                hw["gpu_name"] = first[0].strip()
+                hw["vram_gb"] = round(float(first[1].strip()) / 1024, 1)
+                hw["acceleration"] = f"NVIDIA CUDA ({hw['vram_gb']}GB VRAM)"
+        except Exception:
+            pass
+
+    return hw
+
+def get_installed_ollama_models() -> list:
+    """Retorna la lista de modelos descargados actualmente en el servidor Ollama."""
+    host = get_ollama_host()
+    # 1. API HTTP de Ollama
+    try:
+        req = urllib.request.Request(f"{host}/api/tags", headers={"User-Agent": "Nacel/1.0"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode())
+                return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        pass
+
+    # 2. CLI de Ollama como respaldo
+    if shutil.which("ollama"):
+        try:
+            out = subprocess.check_output(["ollama", "list"], stderr=subprocess.DEVNULL).decode().strip()
+            lines = out.splitlines()
+            models = []
+            for line in lines[1:]:
+                parts = line.split()
+                if parts:
+                    models.append(parts[0])
+            return models
+        except Exception:
+            pass
+    return []
+
+def get_model_recommendation(hw=None) -> dict:
+    """Evalúa el hardware del equipo y selecciona el modelo óptimo con razonamiento técnico."""
+    if hw is None:
+        hw = get_system_hardware()
+
+    ram = hw.get("ram_gb", 0.0)
+    vram = hw.get("vram_gb", 0.0)
+    is_apple_silicon = hw.get("is_apple_silicon", False)
+    has_nvidia = "CUDA" in hw.get("acceleration", "")
+
+    # Clasificación en Tiers
+    if (has_nvidia and vram >= 12.0) or (is_apple_silicon and ram >= 24.0) or (ram >= 32.0):
+        tier = "ultra"
+        tier_label = "Gama Alta / Máximo Rendimiento"
+        rec = "qwen2.5-coder:14b"
+        reason = "Tu equipo cuenta con memoria y aceleración de alto nivel para ejecutar modelos de 14B con razonamiento arquitectónico avanzado."
+    elif (is_apple_silicon and ram >= 8.0) or (has_nvidia and vram >= 6.0) or (ram >= 14.0):
+        tier = "pro"
+        tier_label = "Equilibrado / Recomendado (Desarrollo y Terminal)"
+        rec = "qwen2.5-coder:7b"
+        reason = "El estándar de oro para terminal y copiloto: precisión quirúrgica en bash, git, docker y corrección de sintaxis."
+    elif (has_nvidia and vram >= 3.5) or (ram >= 6.0):
+        tier = "light"
+        tier_label = "Ligero y Rápido (Respuesta instantánea)"
+        rec = "qwen2.5-coder:3b"
+        reason = "Excelente velocidad y bajo consumo (~2.0GB). Mucho más inteligente que modelos de 1.5B para shell y scripts."
+    else:
+        tier = "minimal"
+        tier_label = "Ultraligero / Recursos limitados"
+        rec = "qwen2.5-coder:1.5b"
+        reason = "Mínimo consumo (~1.0GB RAM), ideal para equipos con poca memoria sin ralentizar el sistema."
+
+    catalog = [
+        {
+            "id": "1",
+            "model": "qwen2.5-coder:7b",
+            "tag": "Recomendado ⭐" if rec == "qwen2.5-coder:7b" else "Potente",
+            "desc": "Máxima precisión en bash, sintaxis y corrección de errores (~4.7GB)",
+            "min_ram": "8GB+ RAM / VRAM"
+        },
+        {
+            "id": "2",
+            "model": "qwen2.5-coder:3b",
+            "tag": "Recomendado ⭐" if rec == "qwen2.5-coder:3b" else "Ultrarrápido ⚡",
+            "desc": "Respuesta inmediata, excelente equilibrio y bajo consumo (~2.0GB)",
+            "min_ram": "4GB - 8GB RAM"
+        },
+        {
+            "id": "3",
+            "model": "gemma2:2b",
+            "tag": "Conversacional 💬",
+            "desc": "Ultraligero de Google, excelente en español y explicaciones (~1.6GB)",
+            "min_ram": "4GB+ RAM"
+        },
+        {
+            "id": "4",
+            "model": "qwen2.5-coder:1.5b",
+            "tag": "Recomendado ⭐" if rec == "qwen2.5-coder:1.5b" else "Mínimo consumo 🪶",
+            "desc": "Consumo mínimo para equipos con muy poca memoria RAM (~1.0GB)",
+            "min_ram": "2GB - 4GB RAM"
+        },
+        {
+            "id": "5",
+            "model": "qwen2.5-coder:14b",
+            "tag": "Recomendado ⭐" if rec == "qwen2.5-coder:14b" else "Experto 🔥",
+            "desc": "Máxima profundidad lógica y razonamiento de arquitectura (~9.0GB)",
+            "min_ram": "16GB - 24GB+ VRAM"
+        }
+    ]
+
+    return {
+        "hardware": hw,
+        "tier": tier,
+        "tier_label": tier_label,
+        "recommended_model": rec,
+        "reason": reason,
+        "catalog": catalog
+    }
 
 def get_terminal_scrollback(lines=30) -> str:
     """
@@ -594,31 +811,211 @@ def handle_lang(args: list):
     else:
         print_tty(f"{DIM}Sin cambios / No changes made.{RESET}")
 
+def render_hardware_box(hw=None, rec=None, installed=None):
+    """Muestra una caja visual con el diagnóstico de hardware y la recomendación."""
+    if hw is None:
+        hw = get_system_hardware()
+    if rec is None:
+        rec = get_model_recommendation(hw)
+    if installed is None:
+        installed = get_installed_ollama_models()
+
+    active_model = get_current_model()
+    lines = [
+        f"{BOLD}🖥️ Sistema Operativo / OS:{RESET} {CYAN}{hw['os_name']} ({hw['arch']}){RESET}",
+        f"{BOLD}⚙️ Procesador / CPU:{RESET} {CYAN}{hw['cpu_name']} ({hw['cpu_cores']} núcleos){RESET}",
+        f"{BOLD}🧠 Memoria RAM:{RESET} {CYAN}{hw['ram_gb']} GB{RESET}",
+        f"{BOLD}⚡ Aceleración de Hardware:{RESET} {GREEN}{hw['acceleration']}{RESET}",
+        f"{BOLD}🏷️ Perfil Detectado:{RESET} {MAGENTA}{rec['tier_label']}{RESET}",
+        f"{BOLD}🤖 Modelo Activo Actual:{RESET} {CYAN}{BOLD}{active_model}{RESET}",
+        f"{BOLD}🎯 Modelo Recomendado Óptimo:{RESET} {YELLOW}{BOLD}{rec['recommended_model']}{RESET}",
+    ]
+    render_box("Diagnóstico de Hardware y Recomendación de IA", lines)
+
+    print_tty(f"\n{BOLD}💡 ¿Por qué {CYAN}{rec['recommended_model']}{RESET}{BOLD}?{RESET}")
+    print_tty(f"  {rec['reason']}\n")
+
+    if installed:
+        installed_str = ", ".join([f"{CYAN}{m}{RESET}" for m in installed])
+        print_tty(f"{BOLD}📦 Modelos detectados en tu Ollama local:{RESET} {installed_str}\n")
+
+def setup_model(interactive=True, auto_select=False, model_override="", pull_after=True) -> str:
+    """
+    Ejecuta el asistente de selección de modelo para el instalador o comandos CLI:
+    1. Diagnostica hardware.
+    2. Sugiere el mejor modelo según RAM y GPU.
+    3. Muestra catálogo con badges [Recomendado] y [Instalado].
+    4. Guarda en ~/.config/nacel/config.json.
+    5. Descarga automáticamente el modelo vía Ollama si está disponible.
+    """
+    hw = get_system_hardware()
+    rec_info = get_model_recommendation(hw)
+    rec_model = rec_info["recommended_model"]
+    installed = get_installed_ollama_models()
+    catalog = rec_info["catalog"]
+
+    if model_override:
+        chosen_model = model_override.strip()
+    elif auto_select or not interactive:
+        chosen_model = rec_model
+    else:
+        render_hardware_box(hw, rec_info, installed)
+        print_tty(f"{BOLD}Selecciona el modelo de IA para configurar en Nacel:{RESET}")
+
+        option_map = {}
+        idx = 1
+        for item in catalog:
+            m_name = item["model"]
+            is_rec = (m_name == rec_model)
+            is_inst = any(m_name in inst for inst in installed)
+
+            badges = []
+            if is_rec:
+                badges.append(f"{YELLOW}{BOLD}[Recomendado ⭐]{RESET}")
+            if is_inst:
+                badges.append(f"{GREEN}[Instalado ✔]{RESET}")
+            badge_str = " ".join(badges) if badges else ""
+
+            print_tty(f"  {CYAN}[{idx}]{RESET} {BOLD}{m_name:<20}{RESET} {badge_str:<26} {DIM}{item['desc']}{RESET}")
+            option_map[str(idx)] = m_name
+            idx += 1
+
+        print_tty(f"  {CYAN}[{idx}]{RESET} {BOLD}{'Personalizado...':<20}{RESET} {DIM}Escribir manualmente cualquier otro modelo de Ollama{RESET}")
+        custom_idx = str(idx)
+
+        print_tty(f"\n{BOLD}Elige una opción [1-{idx}] (Enter para {rec_model} en 10s):{RESET} ", end="")
+        choice = read_key(timeout=10).strip()
+        print_tty()
+
+        if choice in option_map:
+            chosen_model = option_map[choice]
+        elif choice == custom_idx:
+            print_tty(f"{CYAN}❯{RESET} {BOLD}Ingresa el nombre del modelo de Ollama (ej: llama3.2:1b):{RESET} ", end="")
+            chosen_model = input_tty().strip()
+            if not chosen_model:
+                chosen_model = rec_model
+        else:
+            chosen_model = rec_model
+
+    # Guardar en config.json respetando otros parámetros (ej: lang)
+    cfg = load_config()
+    cfg["model"] = chosen_model
+    if "lang" not in cfg:
+        cfg["lang"] = "es"
+    save_config(cfg)
+    print_tty(f"\n{GREEN}✔ Modelo configurado en Nacel:{RESET} {CYAN}{BOLD}{chosen_model}{RESET}")
+    print_tty(f"{DIM}Guardado en {CONFIG_FILE}{RESET}")
+
+    # Descarga automática vía Ollama
+    if pull_after:
+        ollama_bin = shutil.which("ollama")
+        is_already_installed = any(chosen_model in inst for inst in installed)
+        if is_already_installed:
+            print_tty(f"{GREEN}✔ El modelo {BOLD}{chosen_model}{RESET}{GREEN} ya está listo localmente en tu Ollama.{RESET}")
+        elif ollama_bin or check_ollama():
+            print_tty(f"\n{CYAN}▶ Descargando modelo {BOLD}{chosen_model}{RESET}{CYAN} en Ollama...{RESET}")
+            try:
+                ret = subprocess.run(["ollama", "pull", chosen_model])
+                if ret.returncode == 0:
+                    print_tty(f"\n{GREEN}✔ Modelo {BOLD}{chosen_model}{RESET}{GREEN} descargado e instalado con éxito.{RESET}")
+                else:
+                    print_tty(f"\n{YELLOW}⚠️ No se pudo completar la descarga automática (código {ret.returncode}).{RESET}")
+                    print_tty(f"Ejecuta: '{BOLD}ollama pull {chosen_model}{RESET}' cuando tengas conexión.")
+            except Exception as e:
+                print_tty(f"\n{YELLOW}⚠️ No se pudo ejecutar ollama pull: {e}{RESET}")
+                print_tty(f"Ejecuta: '{BOLD}ollama pull {chosen_model}{RESET}' manualmente.")
+        else:
+            print_tty(f"\n{YELLOW}⚠️ Ollama no está instalado o no se encuentra en el PATH.{RESET}")
+            print_tty(f"Para usar Nacel con IA local, descarga Ollama desde: {CYAN}https://ollama.com{RESET}")
+            print_tty(f"Luego descarga el modelo recomendado con: {BOLD}ollama pull {chosen_model}{RESET}")
+
+    return chosen_model
+
+def handle_hardware(args: list = None):
+    """Muestra el diagnóstico de hardware y sugerencias de modelo."""
+    hw = get_system_hardware()
+    rec = get_model_recommendation(hw)
+    installed = get_installed_ollama_models()
+    render_hardware_box(hw, rec, installed)
+    print_tty(f"{BOLD}Comandos de gestión:{RESET}")
+    print_tty(f"  • {GREEN}nacel model auto{RESET}      -> Configura automáticamente {rec['recommended_model']}")
+    print_tty(f"  • {GREEN}nacel model recommend{RESET} -> Asistente interactivo para cambiar de modelo")
+    print_tty(f"  • {GREEN}nacel model set <m>{RESET}   -> Cambia a cualquier modelo manual\n")
+
 def handle_model(args: list):
     cfg = load_config()
 
+    # nacel model auto / autotune
+    if args and args[0].lower() in ("auto", "autotune", "tune"):
+        setup_model(interactive=False, auto_select=True, pull_after=True)
+        return
+
+    # nacel model recommend / rec / wizard / setup
+    if args and args[0].lower() in ("recommend", "rec", "recomendar", "setup", "wizard"):
+        setup_model(interactive=True, auto_select=False, pull_after=True)
+        return
+
+    # nacel model list / ls
+    if args and args[0].lower() in ("list", "ls"):
+        hw = get_system_hardware()
+        rec = get_model_recommendation(hw)
+        installed = get_installed_ollama_models()
+        active = get_current_model()
+        print_tty(f"\n{BOLD}🤖 Modelo activo:{RESET} {CYAN}{BOLD}{active}{RESET}")
+        print_tty(f"{BOLD}🎯 Recomendado para tu hardware:{RESET} {YELLOW}{BOLD}{rec['recommended_model']}{RESET} ({rec['tier_label']})\n")
+        print_tty(f"{BOLD}📦 Modelos instalados en Ollama local:{RESET}")
+        if installed:
+            for m in installed:
+                cur = f" {GREEN}(Activo){RESET}" if m == active else ""
+                print_tty(f"  • {CYAN}{m}{RESET}{cur}")
+        else:
+            print_tty(f"  {DIM}(No se detectaron modelos descargados en Ollama){RESET}")
+        print_tty(f"\n{BOLD}💡 Catálogo de modelos recomendados para Nacel:{RESET}")
+        for item in rec["catalog"]:
+            print_tty(f"  • {GREEN}{item['model']:<20}{RESET} {DIM}{item['desc']}{RESET}")
+        print_tty(f"\n{DIM}Para cambiar de modelo ejecuta: nacel model set <nombre_del_modelo>{RESET}\n")
+        return
+
+    # nacel model set <nombre>
     if len(args) >= 2 and args[0].lower() in ("set", "use"):
         new_model = args[1].strip()
         cfg["model"] = new_model
         save_config(cfg)
         print_tty(f"{GREEN}✔ Modelo establecido a:{RESET} {CYAN}{BOLD}{new_model}{RESET}")
-        print_tty(f"{DIM}Guardado en ~/.config/nacel/config.json{RESET}")
+        print_tty(f"{DIM}Guardado en {CONFIG_FILE}{RESET}")
+        installed = get_installed_ollama_models()
+        if not any(new_model in inst for inst in installed):
+            print_tty(f"{YELLOW}💡 Nota: {new_model} no parece estar descargado en tu Ollama aún.{RESET}")
+            print_tty(f"Puedes descargarlo ejecutando: {BOLD}ollama pull {new_model}{RESET}")
         return
 
-    # Si se pasa un argumento directo como modelo (ej: nacel model gemma2:2b)
-    if len(args) == 1 and args[0].lower() not in ("list", "status"):
+    # Si se pasa un argumento directo como modelo (ej: nacel model qwen2.5-coder:7b)
+    if len(args) == 1 and args[0].lower() not in ("status", "info"):
         new_model = args[0].strip()
         cfg["model"] = new_model
         save_config(cfg)
         print_tty(f"{GREEN}✔ Modelo establecido a:{RESET} {CYAN}{BOLD}{new_model}{RESET}")
         return
 
+    # nacel model (sin argumentos o status)
     handle_status()
-    print_tty(f"\n{BOLD}💡 Modelos recomendados para Nacel:{RESET}")
-    print_tty(f"  • {GREEN}gemma2:2b{RESET}         -> Ultraligero, rápido y excelente en conversación/español")
-    print_tty(f"  • {GREEN}qwen2.5-coder:7b{RESET}  -> El mejor copiloto de programación y comandos terminal")
-    print_tty(f"  • {GREEN}qwen2.5-coder:1.5b{RESET}-> Mínimo consumo de recursos (~1GB VRAM)")
-    print_tty(f"\n{DIM}Para cambiar de modelo ejecuta: nacel model set <nombre_del_modelo>{RESET}")
+    hw = get_system_hardware()
+    rec = get_model_recommendation(hw)
+    installed = get_installed_ollama_models()
+
+    print_tty(f"\n{BOLD}🎯 Modelo óptimo recomendado para tu equipo:{RESET} {YELLOW}{BOLD}{rec['recommended_model']}{RESET}")
+    print_tty(f"  {DIM}{rec['reason']}{RESET}\n")
+
+    if installed:
+        installed_str = ", ".join([f"{CYAN}{m}{RESET}" for m in installed])
+        print_tty(f"{BOLD}📦 Modelos instalados en Ollama:{RESET} {installed_str}\n")
+
+    print_tty(f"{BOLD}💡 Opciones y Comandos de Modelo:{RESET}")
+    print_tty(f"  • {GREEN}nacel model auto{RESET}      -> Configurar automáticamente el mejor modelo para tu equipo")
+    print_tty(f"  • {GREEN}nacel model recommend{RESET} -> Asistente interactivo guiado de selección")
+    print_tty(f"  • {GREEN}nacel model list{RESET}      -> Listar modelos instalados y catálogo completo")
+    print_tty(f"  • {GREEN}nacel model set <m>{RESET}   -> Cambiar manualmente de modelo (ej: {rec['recommended_model']})")
+    print_tty(f"  • {GREEN}nacel hardware{RESET}        -> Ver diagnóstico detallado de CPU, RAM y GPU\n")
 
 # ==============================================================================
 # FUNCIONALIDADES PRINCIPALES (EXPLAIN, DEBUG, FIX, ASK, CHAT)
@@ -979,9 +1376,15 @@ def handle_status():
     model = get_current_model()
     status_str = f"{GREEN}Activo y respondiendo / Active{RESET}" if ollama_ok else f"{RED}Inactivo / Offline ({host}){RESET}"
     os_info = get_os_info()
+    hw = get_system_hardware()
+    rec = get_model_recommendation(hw)
+    hw_str = f"{hw['cpu_name']} ({hw['cpu_cores']} núcleos) • {hw['ram_gb']}GB RAM"
     lines = [
         f"{BOLD}🖥️ Sistema Operativo / OS:{RESET} {CYAN}{os_info}{RESET}",
-        f"{BOLD}🤖 Modelo de IA / Model:{RESET} {CYAN}{model}{RESET}",
+        f"{BOLD}⚙️ Hardware:{RESET} {CYAN}{hw_str}{RESET}",
+        f"{BOLD}⚡ Aceleración / Engine:{RESET} {GREEN}{hw['acceleration']}{RESET}",
+        f"{BOLD}🤖 Modelo de IA / Model:{RESET} {CYAN}{BOLD}{model}{RESET}",
+        f"{BOLD}🎯 Recomendado para tu equipo:{RESET} {YELLOW}{rec['recommended_model']}{RESET}",
         f"{BOLD}🔌 Servidor Ollama / Host:{RESET} {status_str}",
         f"{BOLD}📁 Configuración / Config:{RESET} {CONFIG_FILE}",
         f"{BOLD}🌐 Idioma actual / Language:{RESET} {GREEN}{lang.upper()}{RESET}",
@@ -1140,6 +1543,21 @@ def main():
         handle_help()
     elif command in ("model", "models", "status", "info"):
         handle_model(args)
+    elif command in ("hardware", "hw", "specs"):
+        handle_hardware(args)
+    elif command in ("setup-model", "--setup-model"):
+        auto_sel = any(a in ("--auto", "-y", "--yes") for a in args)
+        no_pull = "--no-pull" in args
+        custom_m = ""
+        for i, a in enumerate(args):
+            if a == "--model" and i + 1 < len(args):
+                custom_m = args[i + 1]
+        setup_model(interactive=not auto_sel, auto_select=auto_sel, model_override=custom_m, pull_after=not no_pull)
+    elif command in ("--recommend-json", "recommend-json"):
+        hw = get_system_hardware()
+        rec = get_model_recommendation(hw)
+        rec["installed_models"] = get_installed_ollama_models()
+        sys.stdout.write(json.dumps(rec, indent=2) + "\n")
     elif command in ("lang", "language", "idioma"):
         handle_lang(args)
     elif command in ("get-lang", "lang-code"):

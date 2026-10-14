@@ -14,6 +14,7 @@ _nacel() {
     'debug:Depura trazas de error y causa raíz / Debug error traces and root cause'
     'lang:Ver o cambiar idioma activo (es/en) / View or switch active language'
     'model:Ver o cambiar modelo de IA y estado de Ollama / View or switch AI model and Ollama status'
+    'hardware:Diagnóstico de hardware y recomendación de modelo / Hardware specs & model info'
     'help:Muestra la lista de todas las opciones / Show all available options'
   )
 
@@ -41,7 +42,10 @@ _nacel() {
         model)
           local -a model_actions
           model_actions=(
-            'set:Establecer un modelo (ej: gemma2:2b, qwen2.5-coder:7b)'
+            'set:Establecer un modelo (ej: qwen2.5-coder:7b, gemma2:2b)'
+            'recommend:Asistente interactivo guiado según tu hardware'
+            'auto:Auto-configurar el modelo óptimo para tu hardware'
+            'list:Listar modelos instalados en Ollama y catálogo'
             'status:Ver estado actual del modelo y Ollama'
           )
           _describe -t model_actions 'acción de modelo' model_actions
