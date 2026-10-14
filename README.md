@@ -15,8 +15,8 @@ Diseñado con soporte de primer nivel para:
 ### Opción 1: En tus Dotfiles (Recomendada)
 En tu archivo `~/.zshrc`:
 ```zsh
-fpath=("$HOME/dotfiles/zsh/plugins/nacel" $fpath)
-source "$HOME/dotfiles/zsh/plugins/nacel/nacel.plugin.zsh"
+fpath=("$HOME/nacel" $fpath)
+source "$HOME/nacel/nacel.plugin.zsh"
 ```
 
 ### Opción 2: Con Oh-My-Zsh

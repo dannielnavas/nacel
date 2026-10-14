@@ -11,10 +11,10 @@ NACEL_PLUGIN_DIR="${0:A:h}"
 
 # Validar ubicación de nacel.py con fallbacks seguros
 if [[ ! -f "$NACEL_PLUGIN_DIR/nacel.py" ]]; then
-  if [[ -f "$HOME/dotfiles/zsh/plugins/nacel/nacel.py" ]]; then
-    NACEL_PLUGIN_DIR="$HOME/dotfiles/zsh/plugins/nacel"
-  elif [[ -f "$HOME/nacel/nacel.py" ]]; then
+  if [[ -f "$HOME/nacel/nacel.py" ]]; then
     NACEL_PLUGIN_DIR="$HOME/nacel"
+  elif [[ -f "$HOME/.nacel/nacel.py" ]]; then
+    NACEL_PLUGIN_DIR="$HOME/.nacel"
   elif [[ -f "$HOME/.local/bin/nacel" ]]; then
     NACEL_PLUGIN_DIR="$HOME/.local/bin"
   fi
