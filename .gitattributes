@@ -1,0 +1,5 @@
+# Ensure Unix line endings (LF) across all OS, preventing CRLF issues on WSL2 and Windows
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.zsh text eol=lf
