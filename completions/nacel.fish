@@ -21,11 +21,19 @@ complete -c nacel -n "__fish_is_first_token" -a "help" -d "Muestra la lista de t
 complete -c nacel -n "__fish_seen_subcommand_from explain debug" -F
 
 # Subcomandos de model
-complete -c nacel -n "__fish_seen_subcommand_from model" -a "set" -d "Establecer modelo (ej: qwen2.5-coder:7b)"
+complete -c nacel -n "__fish_seen_subcommand_from model" -a "set" -d "Establecer modelo (ej: llama3.2:1b, qwen2.5-coder:7b)"
 complete -c nacel -n "__fish_seen_subcommand_from model" -a "auto" -d "Auto-configurar modelo óptimo según hardware"
 complete -c nacel -n "__fish_seen_subcommand_from model" -a "recommend" -d "Asistente interactivo guiado de selección"
 complete -c nacel -n "__fish_seen_subcommand_from model" -a "list" -d "Listar modelos instalados y catálogo"
 complete -c nacel -n "__fish_seen_subcommand_from model" -a "status" -d "Ver estado actual del modelo y Ollama"
+
+# Opciones de modelos para nacel model set
+complete -c nacel -n "__fish_seen_subcommand_from model; and __fish_seen_subcommand_from set" -a "llama3.2:1b" -d "Ultracompacto de Meta (~1.3GB), ágil y certero en errores"
+complete -c nacel -n "__fish_seen_subcommand_from model; and __fish_seen_subcommand_from set" -a "qwen2.5-coder:7b" -d "Estándar de oro en precisión de terminal y bash (~4.7GB)"
+complete -c nacel -n "__fish_seen_subcommand_from model; and __fish_seen_subcommand_from set" -a "qwen2.5-coder:3b" -d "Respuesta rápida y excelente equilibrio (~2.0GB)"
+complete -c nacel -n "__fish_seen_subcommand_from model; and __fish_seen_subcommand_from set" -a "gemma2:2b" -d "Ultraligero de Google, excelente en explicaciones (~1.6GB)"
+complete -c nacel -n "__fish_seen_subcommand_from model; and __fish_seen_subcommand_from set" -a "qwen2.5-coder:1.5b" -d "Consumo mínimo para RAM ajustada (~1.0GB)"
+complete -c nacel -n "__fish_seen_subcommand_from model; and __fish_seen_subcommand_from set" -a "qwen2.5-coder:14b" -d "Máxima profundidad lógica y arquitectura (~9.0GB)"
 
 # Subcomandos de lang
 complete -c nacel -n "__fish_seen_subcommand_from lang" -a "es" -d "Español / Spanish"

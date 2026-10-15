@@ -104,6 +104,7 @@ Durante la instalación, Nacel analiza automáticamente las especificaciones de 
 | **Gama Alta (Ultra)**<br>*(VRAM ≥ 12GB o Apple Silicon ≥ 24GB)* | **`qwen2.5-coder:14b`** | Máxima profundidad lógica y razonamiento de arquitectura (~9.0GB) |
 | **Equilibrado / Desarrollador (Pro)**<br>*(Apple Silicon ≥ 8GB, GPU ≥ 6GB o RAM ≥ 14GB)* | **`qwen2.5-coder:7b`** ⭐ *(Recomendado)* | El estándar de oro: precisión quirúrgica en bash, git, docker y corrección de sintaxis (~4.7GB) |
 | **Ligero y Rápido (Light)**<br>*(RAM 6GB - 12GB sin GPU dedicada)* | **`qwen2.5-coder:3b`** ⚡ | Respuesta instantánea, excelente precisión y bajo consumo (~2.0GB) |
+| **Diagnóstico y Errores**<br>*(Cualquier equipo ≥ 2GB RAM)* | **`llama3.2:1b`** 🎯 | Modelo ultracompacto de Meta (~1.3GB), ágil y muy certero diagnosticando errores |
 | **Conversacional**<br>*(Cualquier equipo ≥ 4GB RAM)* | **`gemma2:2b`** 💬 | Ultraligero de Google, excelente en lenguaje natural y explicaciones (~1.6GB) |
 | **Ultraligero (Minimal)**<br>*(Equipos ajustados, RAM ≤ 4GB)* | **`qwen2.5-coder:1.5b`** 🪶 | Mínimo impacto de memoria (~1.0GB RAM) para entornos modestos o VPS |
 

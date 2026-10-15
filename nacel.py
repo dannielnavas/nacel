@@ -564,20 +564,27 @@ def get_model_recommendation(hw=None) -> dict:
         },
         {
             "id": "3",
+            "model": "llama3.2:1b",
+            "tag": "Diagnóstico y Errores 🎯" if rec != "llama3.2:1b" else "Recomendado ⭐",
+            "desc": "Modelo ultracompacto de Meta (~1.3GB), ágil y muy certero diagnosticando errores",
+            "min_ram": "2GB - 4GB RAM"
+        },
+        {
+            "id": "4",
             "model": "gemma2:2b",
             "tag": "Conversacional 💬",
             "desc": "Ultraligero de Google, excelente en español y explicaciones (~1.6GB)",
             "min_ram": "4GB+ RAM"
         },
         {
-            "id": "4",
+            "id": "5",
             "model": "qwen2.5-coder:1.5b",
             "tag": "Recomendado ⭐" if rec == "qwen2.5-coder:1.5b" else "Mínimo consumo 🪶",
             "desc": "Consumo mínimo para equipos con muy poca memoria RAM (~1.0GB)",
             "min_ram": "2GB - 4GB RAM"
         },
         {
-            "id": "5",
+            "id": "6",
             "model": "qwen2.5-coder:14b",
             "tag": "Recomendado ⭐" if rec == "qwen2.5-coder:14b" else "Experto 🔥",
             "desc": "Máxima profundidad lógica y razonamiento de arquitectura (~9.0GB)",

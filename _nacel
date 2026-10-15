@@ -40,15 +40,28 @@ _nacel() {
           _describe -t langs 'idioma' langs
           ;;
         model)
-          local -a model_actions
-          model_actions=(
-            'set:Establecer un modelo (ej: qwen2.5-coder:7b, gemma2:2b)'
-            'recommend:Asistente interactivo guiado según tu hardware'
-            'auto:Auto-configurar el modelo óptimo para tu hardware'
-            'list:Listar modelos instalados en Ollama y catálogo'
-            'status:Ver estado actual del modelo y Ollama'
-          )
-          _describe -t model_actions 'acción de modelo' model_actions
+          if (( CURRENT == 3 )); then
+            local -a model_actions
+            model_actions=(
+              'set:Establecer modelo activo (ej: llama3.2:1b, qwen2.5-coder:7b)'
+              'recommend:Asistente interactivo guiado según tu hardware'
+              'auto:Auto-configurar el modelo óptimo para tu hardware'
+              'list:Listar modelos instalados en Ollama y catálogo'
+              'status:Ver estado actual del modelo y Ollama'
+            )
+            _describe -t model_actions 'acción de modelo' model_actions
+          elif (( CURRENT == 4 )) && [[ "$words[2]" == "set" || "$words[3]" == "set" ]]; then
+            local -a models
+            models=(
+              'llama3.2:1b:Ultracompacto de Meta (~1.3GB), ágil y certero en errores'
+              'qwen2.5-coder:7b:Estándar de oro en precisión de terminal y bash (~4.7GB)'
+              'qwen2.5-coder:3b:Respuesta rápida y excelente equilibrio (~2.0GB)'
+              'gemma2:2b:Ultraligero de Google, excelente en explicaciones (~1.6GB)'
+              'qwen2.5-coder:1.5b:Consumo mínimo para RAM ajustada (~1.0GB)'
+              'qwen2.5-coder:14b:Máxima profundidad lógica y arquitectura (~9.0GB)'
+            )
+            _describe -t models 'modelo de IA' models
+          fi
           ;;
         *)
           _message 'consulta o argumento'
